@@ -6,8 +6,8 @@ Node.js + Express + MongoDB(mongoose)
 
 これを使用するには
 
-'''bash
+```bash
 npm install argon2
-'''
+```
 
 を追加で実行して下さい。
