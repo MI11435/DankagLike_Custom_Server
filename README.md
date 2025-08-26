@@ -1,6 +1,6 @@
 # dklike-api-server
 
-ダンカグライクのカスタムサーバーのサンプルをちょっとだけ変えたものです。  
+ダンカグライクのカスタムサーバーのサンプルをちょっとだけ変えたものの差分です。  
 
 Node.js + Express + MongoDB(mongoose)
 
