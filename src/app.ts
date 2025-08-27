@@ -383,7 +383,7 @@ app.put("/likes/:userId", async (req, res) => {
  */
 app.post('/accounts', async (req, res) => {
   try {
-    const { accountId, password, name, icon } = req.body;
+    let { accountId, password, name, icon } = req.body;
 
     // アカウントIDの重複チェック
     const existingAccount = await accountsResource.findOne({ accountId });
@@ -394,7 +394,8 @@ app.post('/accounts', async (req, res) => {
       });
       return;
     }
-
+    // hash化
+    password = await argon2.hash(password);
     // アカウント作成
     const newAccount = new accountsResource({ accountId, password, name, icon });
     await newAccount.save();
@@ -476,6 +477,12 @@ app.post('/accountLogin', async (req, res) => {
     const account = await accountsResource.findOne({ accountId });
     if (!account) {
       res.status(401).json({ success: false, message: 'Account not found.\nそんなアカウントねーよ' });
+      return;
+    }
+
+    //万が一req.passwordが20文字超過していたらエラーを吐かせる
+    if (20 < password.length){
+      res.status(401).json({ success: false, message: `You're a Cracker.\nこのメッセージが出ているという事は、貴方はクラッカーです。`});
       return;
     }
 
