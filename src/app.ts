@@ -2,6 +2,7 @@ import express, { Application } from "express";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import cors from "cors";
+//import bcrypt from "bcrypt";
 import argon2 from "argon2";
 import { dbConfig } from "./config/db";
 
@@ -19,7 +20,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// スキーマを作成
+//--------------------------
+// DBスキーマ定義
+//--------------------------
+
+// コンテンツ情報
 const contentsSchema = new mongoose.Schema({
   id: { type: Number, unique: true, required: true },
   contentType: { type: Number, required: true },
@@ -38,6 +43,7 @@ const contentsSchema = new mongoose.Schema({
 });
 const contentsResource = mongoose.model("contents", contentsSchema);
 
+// コンテンツ評価情報
 const votesSchema = new mongoose.Schema({
   id: { type: Number, unique: true, required: true },
   contentId: { type: Number, required: true },
@@ -50,21 +56,25 @@ const votesSchema = new mongoose.Schema({
 });
 const votesResource = mongoose.model("votes", votesSchema);
 
+// いいね情報
 const likesSchema = new mongoose.Schema({
   userId: { type: String, required: true },
   voteId: { type: Number, require: true },
 });
 const likesResource = mongoose.model("likes", likesSchema);
 
+// アカウント情報
 const accountsSchema = new mongoose.Schema({
   accountId: { type: String, required: true },
   password: { type: String, require: true },
   token: { type: String, require: false },
   name: { type: String, require: false },
-  icon: { type: Number, require: false }
+  icon: { type: Number, require: false },
+  banned: { type: Boolean, require: false, default: false }
 });
 const accountsResource = mongoose.model("accounts", accountsSchema);
 
+// ランキング情報
 const rankingSchema = new mongoose.Schema({
   songTitle: { type: String, require: true },
   difficulty: { type: Number, require: true },
@@ -83,6 +93,23 @@ const counterSchema = new mongoose.Schema({
 });
 const Counter = mongoose.model('Counter', counterSchema);
 
+//--------------------------
+// 共通設定、関数
+//--------------------------
+
+// 特に返すべきデータがない場合でも、成功を示すメッセージを返す用
+const successMessage = { message: "Operation was successful." };
+
+// JWTシークレット
+const secret = 'oauthServerSampleSecret';
+
+app.set('superSecret', secret);
+
+/**
+ * カウンターをインクリメントして次の値を取得する関数
+ * @param name カウンター名
+ * @returns インクリメント後の値
+ */
 async function getNextSequence(name: String) {
   const result = await Counter.findOneAndUpdate(
     { name },                      // 条件: カウンター名
@@ -95,14 +122,6 @@ async function getNextSequence(name: String) {
 
   return result.seq;
 }
-
-// 特に返すべきデータがない場合でも、成功を示すメッセージを返す用
-const successMessage = { message: "Operation was successful." };
-
-// JWTシークレット
-const secret = 'oauthServerSampleSecret';
-
-app.set('superSecret', secret);
 
 // 認証用ミドルウェア (Authorizationを適用したサーバーにしたいときに使用)
 // function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
@@ -119,19 +138,23 @@ app.set('superSecret', secret);
 // }
 
 // トランザクション実行のヘルパー
-async function runWithTransaction(task: (session: mongoose.ClientSession) => Promise<void>) {
-  const session = await mongoose.startSession();
-  try {
-    session.startTransaction();
-    await task(session);
-    await session.commitTransaction();
-  } catch (err) {
-    await session.abortTransaction();
-    throw err;
-  } finally {
-    session.endSession();
-  }
-}
+// async function runWithTransaction(task: (session: mongoose.ClientSession) => Promise<void>) {
+//   const session = await mongoose.startSession();
+//   try {
+//     session.startTransaction();
+//     await task(session);
+//     await session.commitTransaction();
+//   } catch (err) {
+//     await session.abortTransaction();
+//     throw err;
+//   } finally {
+//     session.endSession();
+//   }
+// }
+
+//--------------------------
+// サポート情報API
+//--------------------------
 
 /**
  * [機能のサポート情報]
@@ -142,6 +165,9 @@ app.get("/support", async (req, res) => {
     contents: true,
     accounts: true,
     ranking: true,
+    options: {
+      requireAccountEmail: false, // アカウント登録にメールアドレスを必須にするか
+    }
   });
 });
 
@@ -200,7 +226,6 @@ app.get("/contents/:id", async (req, res) => {
  * コンテンツ詳細を取得して返却します
  **/
 app.get("/contents/:id/description", async (req, res) => {
-  //console.log("/contents/"+req.params.id+"/description");
   // 指定したIDのコンテンツを取得する
   const id = req.params.id;
   const content = await contentsResource.findOne({ id: id });
@@ -216,7 +241,6 @@ app.get("/contents/:id/description", async (req, res) => {
  * コンテンツのダウンロードカウントを1増やします
  **/
 app.put("/contents/:id/downloaded", async (req, res) => {
-  //console.log("/contents/"+req.params.id+"/downloaded");
   const id = req.params.id;
   await contentsResource
     .updateOne({ id: id }, { $inc: { downloadCount: 1 } })
@@ -307,7 +331,7 @@ app.put("/contents/:id/vote", async (req, res) => {
     });
 
   // 編集されたVoteをいいね一覧から削除
-  await likesResource.deleteMany({ voteId: voteId })
+  await likesResource.deleteMany({voteId: voteId})
     .then(() => {
       res.status(200).send(successMessage);
     })
@@ -383,7 +407,8 @@ app.put("/likes/:userId", async (req, res) => {
  */
 app.post('/accounts', async (req, res) => {
   try {
-    let { accountId, password, name, icon } = req.body;
+    // メールアドレスも受け取るが、現状は使用しない
+    const { email, accountId, password } = req.body;
 
     // アカウントIDの重複チェック
     const existingAccount = await accountsResource.findOne({ accountId });
@@ -394,16 +419,31 @@ app.post('/accounts', async (req, res) => {
       });
       return;
     }
-    // hash化
-    password = await argon2.hash(password);
+
+    // パスワードをハッシュ化
+    //const saltRounds = 10; // コスト（強度）
+    // 内部的にランダムなソルトを自動生成
+    //const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await argon2.hash(password);
+
     // アカウント作成
-    const newAccount = new accountsResource({ accountId, password, name, icon });
+    const newAccount = new accountsResource({
+      accountId: accountId,
+      password: hashedPassword,
+      name: accountId,
+      icon: 0
+    });
     await newAccount.save();
 
     res.status(201).json({
       success: true,
       message: 'Account successfully created.\nアカウントが正常に作成されました。',
-      account: newAccount
+      account: {
+        accountId: newAccount.accountId,
+        name: newAccount.name,
+        icon: newAccount.icon
+        // passwordは返さない
+      }
     });
 
   } catch (error: any) {
@@ -436,7 +476,14 @@ app.put('/accounts', async (req, res) => {
     const updatedData: any = {};
     if (name !== undefined) updatedData.name = name;
     if (icon !== undefined) updatedData.icon = icon;
-    if (password !== undefined) updatedData.password = password;
+
+    // パスワード更新がある場合はハッシュ化
+    if (password !== undefined) {
+      //const saltRounds = 10;
+      // 内部的にランダムなソルトを自動生成
+      //updatedData.password = await bcrypt.hash(password, saltRounds);
+      updatedData.password = await argon2.hash(password);
+    }
 
     const result = await accountsResource.updateOne(
       { accountId, token },
@@ -466,17 +513,33 @@ app.put('/accounts', async (req, res) => {
 
 /**
  * [アカウントログインAPI]
- * POST http://localhost:3000/accountLogin
+ * POST http://localhost:3000/accounts/login
  */
-app.post('/accountLogin', async (req, res) => {
+app.post('/accounts/login', async (req, res) => {
   try {
     const { accountId, password } = req.body;
-    let Not_hash_password = false;
 
     // アカウントを検索
     const account = await accountsResource.findOne({ accountId });
     if (!account) {
       res.status(401).json({ success: false, message: 'Account not found.\nそんなアカウントねーよ' });
+      return;
+    }
+
+    // バンフラグが存在しない場合は false に初期化
+    if (typeof account.banned === "undefined") {
+      account.banned = false;
+      await account.save();
+    }
+
+    // バンされている場合
+    if (account.banned === true) {
+      res.status(403).json({ success: false, message: 'This account has been banned.\nお前BAN。過去の行いを反省しろ。' });
+      return;
+    }
+
+    if (typeof account.password !== "string") {
+      res.status(500).json({ success: false, message: 'Account password is invalid.\nパスワードが無効だってよ。なに入れたんだよ()' });
       return;
     }
 
@@ -486,44 +549,104 @@ app.post('/accountLogin', async (req, res) => {
       return;
     }
 
-    // パスワードチェック
-    //argon2.verifyの第一引数がハッシュ化されていないとエラーが出るようになったので分けた
-    if (account.password !== password ){
-      if ( ! await argon2.verify(account.password,password)) {
-        res.status(401).json({ success: false, message: 'Wrong password.\nお前ニセモンやろ' });
+    let isMatch = false;
+
+    try {
+      // bcrypt比較（ハッシュ済みならここで通る）
+      //isMatch = await bcrypt.compare(password, account.password);
+      isMatch = await argon2.verify(account.password,password)
+    } catch (e) {
+      isMatch = false;
+    }
+
+    // bcrypt(ハッシュ化されたやつ)で一致しなかった場合 → 平文として比較してみる
+    if (!isMatch && account.password === password) {
+      // 平文で保存されていたので、ハッシュ化して更新
+      //const saltRounds = 10;
+      //const hashedPassword = await bcrypt.hash(password, saltRounds);
+      //account.password = hashedPassword;
+      account.password = await argon2.hash(password);
+      await account.save();
+      isMatch = true;
+    }
+
+    if (!isMatch) {
+      res.status(401).json({ success: false, message: 'Wrong password.\nお前ニセモンやろ' });
       return;
-      }
-    }else{
-      Not_hash_password = true;
     }
 
     // JWTトークン生成
     const token = jwt.sign({ aid: account.accountId }, app.get('superSecret'), {
       expiresIn: '24h'
     });
-    // まだパスワードのハッシュ化をしていない人にハッシュ化をする
-    if(Not_hash_password){
-      account.password = await argon2.hash(password);
-    }
+
     // トークンを保存して更新
     account.token = token;
     await account.save();
 
-    // 成功レスポンス
+    // 成功レスポンス（パスワードは返さない）
     res.status(200).json({
       success: true,
       message: 'Authentication successful.\nログイン成功',
-      account
+      account: {
+        accountId: account.accountId,
+        name: account.name,
+        icon: account.icon,
+        token: account.token
+      }
     });
 
   } catch (err: any) {
-    res.status(500).json({ success: false, message: 'エラー\n ' + err.message });
+    res.status(500).json({ success: false,  message: 'エラー\n ' + err.message });
+  }
+});
+
+/**
+ * [アカウントのパスワードリセット要求API]
+ * POST http://localhost:3000/accounts/request-password-reset
+ * パスワードリセット要求を受け付けます
+ */
+app.post('/accounts/request-password-reset', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // 受け取った場合のサンプルコード
+    // メール送信のサンプルコードはコメントアウトしています
+    /*
+    // アカウントをメールアドレスで検索
+    const account = await accountsResource.findOne({ email });
+    if (!account) {
+      res.status(404).json({ success: false, message: 'Account not found.' });
+      return;
+    }
+    // パスワードリセット用のトークンを生成（有効期限1時間）
+    const resetToken = jwt.sign({ aid: account.accountId }, app.get('superSecret'),
+    {
+      expiresIn: '1h'
+    });
+
+    // メール送信（nodemailerなどを使用）
+    // 例: await sendPasswordResetEmail(email, resetToken);
+    */
+
+    // 実際にはメールを送信するが、ここでは常に成功レスポンスを返す
+    res.status(200).json({
+      success: true,
+      message: 'If the email is registered, a password reset link has been sent.\nえ？パスワード変更したいの？Discordで連絡して()'
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
 //--------------------------
 // ランキング関連API
 //--------------------------
+/**
+ * [ランキング取得API]
+ * 指定した譜面のランキングを取得します
+ * GET http://localhost:3000/ranking?chartHash=xxxx&difficulty=1
+ */
 app.get("/ranking", async (req, res) => {
   try {
     const { chartHash, difficulty } = req.query;
@@ -536,41 +659,58 @@ app.get("/ranking", async (req, res) => {
       return;
     }
 
-    // 型を揃える
     const query = {
       chartHash: String(chartHash).trim(),
       difficulty: Number(difficulty),
     };
 
-    // ランキング上位200件を取得（スコア降順 → abCount降順）
-    const ranking = await rankingResource.find(query)
-      .sort({ score: -1, abCount: -1 })
-      .limit(200)
-      .lean();
+    const ranking = await rankingResource.aggregate([
+      // 対象の譜面のスコアを絞り込み
+      { $match: query },
 
-    // アカウント情報をまとめて取得
-    const accounts = await accountsResource.find({
-      accountId: { $in: ranking.map(r => r.accountId).filter(Boolean) }
-    }).lean();
+      // スコア降順 → abCount降順
+      { $sort: { score: -1, abCount: -1 } },
 
-    // accountId → アカウント のマップを作成
-    const accountMap = new Map(accounts.map(a => [a.accountId, a]));
+      // アカウント情報を結合
+      {
+        $lookup: {
+          from: "accounts",         // コレクション名（モデル名の複数形）
+          localField: "accountId",  // ranking のフィールド
+          foreignField: "accountId",// accounts のフィールド
+          as: "account"
+        }
+      },
 
-    // ランキングデータにアカウント情報を付与
-    const data = ranking.map(r => {
-      const accountId = typeof r.accountId === "string" ? r.accountId : "";
-      const account = accountId ? accountMap.get(accountId) : undefined;
-      return {
-        score: r.score,
-        abCount: r.abCount,
-        date: r.date, // 登録/更新日を返す
-        account: account
-          ? { name: account.name, icon: account.icon }
-          : null
-      };
-    });
+      // account は配列で入るので展開
+      { $unwind: { path: "$account", preserveNullAndEmptyArrays: true } },
 
-    res.status(200).json({ ranking: data });
+      // banned が true のものを除外（カラムが無い or false は許可）
+      {
+        $match: {
+          $or: [
+            { "account.banned": { $exists: false } },
+            { "account.banned": false }
+          ]
+        }
+      },
+
+      // 必要なフィールドだけ返す
+      {
+        $project: {
+          _id: 0,
+          score: 1,
+          abCount: 1,
+          date: 1,
+          "account.name": 1,
+          "account.icon": 1
+        }
+      },
+
+      // 上位200件に制限
+      { $limit: 200 }
+    ]);
+
+    res.status(200).json({ ranking: ranking });
   } catch (err) {
     res.status(500).json({ error: "Internal server error\nサーバーエラー" });
   }
@@ -587,14 +727,18 @@ app.post("/ranking", async (req, res) => {
 
     // 必須チェック
     if (!songTitle || !chartHash || !accountId || !accountToken || score == null || maxScore == null) {
-      res.status(400).json({ error: "songTitle, chartHash, accountId, accountToken, score, and maxScore are required パラメータが不足しています。" });
+      res.status(400).json({ error: "songTitle, chartHash, accountId, accountToken, score, and maxScore are required" });
       return;
     }
 
-    // トークンの検証
+    // トークンの検証とアカウントのバンチェック
     accountsResource.findOne({ accountId }).then(account => {
       if (!account || account.token !== accountToken) {
         return res.status(403).json({ error: "Your account login token is invalid トークンが無効です。" });
+      }
+
+      if (account.banned) {
+        return res.status(403).json({ error: "You cannot perform this action because your account is banned. お前はもうBANされている。" });
       }
     });
 
@@ -651,6 +795,7 @@ app.post("/ranking", async (req, res) => {
       date: today
     });
     await rankingData.save();
+
     if (score === maxScore){
       res.status(201).json({ message: "1ST TAKE ALL BRILLIANT ?!?!?!?!?!?!" });
     }else{
@@ -661,6 +806,9 @@ app.post("/ranking", async (req, res) => {
   }
 });
 
+//--------------------------
+// サーバー起動
+//--------------------------
 
 // Express を立ち上げるポート番号
 const EXPRESS_PORT = process.env.PORT || 3000;
